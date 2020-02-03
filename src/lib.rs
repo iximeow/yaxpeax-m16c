@@ -82,8 +82,7 @@ pub enum Opcode {
     JPZ,
     JSRI,
     JSRS,
-    JSR_A,
-    JSR_W,
+    JSR(Size),
     LDC,
     LDCTX,
     LDE,
@@ -208,8 +207,7 @@ impl fmt::Display for Opcode {
             Opcode::JPZ => write!(f, "jpz"),
             Opcode::JSRI => write!(f, "jsri"),
             Opcode::JSRS => write!(f, "jsrs"),
-            Opcode::JSR_A => write!(f, "jsr_a"),
-            Opcode::JSR_W => write!(f, "jsr_w"),
+            Opcode::JSR(size) => write!(f, "jsr.{}", size),
             Opcode::LDC => write!(f, "ldc"),
             Opcode::LDCTX => write!(f, "ldctx"),
             Opcode::LDE => write!(f, "lde"),
@@ -322,20 +320,50 @@ pub enum Operand {
     RegisterBit(Register, u8),
     ImmediateI16(i16),
     ImmediateU16(u16),
-    RegDerefBit(Register, i16),
+    RegDerefBit(Register),
+    A0A1DispBit(Register, u16),
+    RegDispBit(Register, u16, u8),
     RegDeref(Register, i16),
     AbsoluteBit(u16),
     Absolute(u32),
+    JmpAbsolute(u32),
     Displacement(i16),
+    JmpDisplacement(i16),
     RegList(u8),
 }
 
 impl fmt::Display for Operand {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use Operand::*;
         match self {
-            Register(reg) => write!(f, "{}", reg),
-            ImmediateI16(imm) => {
+            Operand::RegList(list) => {
+                let regs = [
+                    Register::FB,
+                    Register::SB,
+                    Register::A1,
+                    Register::A0,
+                    Register::R3,
+                    Register::R2,
+                    Register::R1,
+                    Register::R0,
+                ];
+
+                let mut printed = false;
+
+                for i in 0..8 {
+                    if list & (1 << i) != 0 {
+                        if printed {
+                            write!(f, ", ")?;
+                        } else {
+                            printed = true;
+                        }
+                        write!(f, "{}", regs[i as usize])?;
+                    }
+                }
+
+                Ok(())
+            }
+            Operand::Register(reg) => write!(f, "{}", reg),
+            Operand::ImmediateI16(imm) => {
                 if *imm == core::i16::MIN {
                     write!(f, "#-8000h")
                 } else if *imm < 0 {
@@ -344,8 +372,17 @@ impl fmt::Display for Operand {
                     write!(f, "#{:02x}h", *imm)
                 }
             },
-            ImmediateU16(imm) => write!(f, "#{:02x}h", imm),
-            RegDeref(reg, offset) => {
+            Operand::ImmediateU16(imm) => write!(f, "#{:02x}h", imm),
+            Operand::RegDerefBit(reg) => {
+                write!(f, "bit,[{}]", reg)
+            }
+            Operand::A0A1DispBit(reg, offset) => {
+                write!(f, "{}[{}]", offset, reg)
+            }
+            Operand::RegDispBit(reg, offset, bit) => {
+                write!(f, "{},{}[{}]", bit, offset, reg)
+            }
+            Operand::RegDeref(reg, offset) => {
                 if *offset == core::i16::MIN {
                     write!(f, "#-8000h")
                 } else if *offset == 0 {
@@ -356,7 +393,7 @@ impl fmt::Display for Operand {
                     write!(f, "{}[{}]", offset, reg)
                 }
             }
-            Displacement(offset) => {
+            Operand::JmpDisplacement(offset) => {
                 if *offset == core::i16::MIN {
                     write!(f, "$-32768")
                 } else if *offset < 0 {
@@ -364,6 +401,21 @@ impl fmt::Display for Operand {
                 } else {
                     write!(f, "$+{}", *offset)
                 }
+            }
+            Operand::Displacement(offset) => {
+                if *offset == core::i16::MIN {
+                    write!(f, "[$-32768]")
+                } else if *offset < 0 {
+                    write!(f, "[$-{}]", -*offset)
+                } else {
+                    write!(f, "[$+{}]", *offset)
+                }
+            }
+            Operand::Absolute(addr) => {
+                write!(f, "[#{:x}h]", addr)
+            }
+            Operand::JmpAbsolute(addr) => {
+                write!(f, "#{:x}h", addr)
             }
             _ => Ok(())
         }
@@ -440,8 +492,10 @@ enum OperandSpec {
     Disp2_16_SB,
     Abs2_16,
     Abs20,
+    JmpAbs20,
     Disp8,
-    Disp16,
+    JmpDisp8,
+    JmpDisp16,
     RegList,
     INTBL,
     INTBH,
@@ -540,15 +594,15 @@ impl Instruction {
             Bit_R3 => Operand::RegisterBit(Register::R3, self.dispabs as u8),
             Bit_A0 => Operand::RegisterBit(Register::A0, self.dispabs as u8),
             Bit_A1 => Operand::RegisterBit(Register::A1, self.dispabs as u8),
-            Bit_Deref_A0 => Operand::RegDerefBit(Register::A0, 0),
-            Bit_Deref_A1 => Operand::RegDerefBit(Register::A1, 0),
-            Bit_Disp8_A0 => Operand::RegDerefBit(Register::A0, self.dispabs as i16),
-            Bit_Disp8_A1 => Operand::RegDerefBit(Register::A1, self.dispabs as i16),
-            Bit_Disp8_SB => Operand::RegDerefBit(Register::SB, self.dispabs as i16),
-            Bit_Disp8_FB => Operand::RegDerefBit(Register::FB, self.dispabs as i16),
-            Bit_Disp16_A0 => Operand::RegDerefBit(Register::A0, self.dispabs as i16),
-            Bit_Disp16_A1 => Operand::RegDerefBit(Register::A1, self.dispabs as i16),
-            Bit_Disp16_SB => Operand::RegDerefBit(Register::SB, self.dispabs as i16),
+            Bit_Deref_A0 => Operand::RegDerefBit(Register::A0),
+            Bit_Deref_A1 => Operand::RegDerefBit(Register::A1),
+            Bit_Disp8_A0 => Operand::A0A1DispBit(Register::A0, self.dispabs as u8 as u16),
+            Bit_Disp8_A1 => Operand::A0A1DispBit(Register::A1, self.dispabs as u8 as u16),
+            Bit_Disp8_SB => Operand::RegDispBit(Register::SB, (self.dispabs as u8 >> 3) as u16, self.dispabs as u8 & 0b111),
+            Bit_Disp8_FB => Operand::RegDispBit(Register::FB, (self.dispabs as u8 >> 3) as u16, self.dispabs as u8 & 0b111),
+            Bit_Disp16_A0 => Operand::A0A1DispBit(Register::A0, self.dispabs as u16),
+            Bit_Disp16_A1 => Operand::A0A1DispBit(Register::A1, self.dispabs as u16),
+            Bit_Disp16_SB => Operand::RegDispBit(Register::SB, self.dispabs as u16 >> 4, self.dispabs as u8 & 0b1111),
             Bit_Abs16 => Operand::AbsoluteBit(self.dispabs),
             Disp8_A0 => Operand::RegDeref(Register::A0, self.dispabs as i8 as i16),
             Disp8_A1 => Operand::RegDeref(Register::A1, self.dispabs as i8 as i16),
@@ -573,8 +627,10 @@ impl Instruction {
             Disp2_16_SB => Operand::RegDeref(Register::SB, self.imm_wide as i16),
             Abs2_16 => Operand::Absolute(self.imm_wide),
             Abs20 => Operand::Absolute(self.imm_wide),
+            JmpAbs20 => Operand::JmpAbsolute(self.imm_wide),
             Disp8 => Operand::Displacement(self.dispabs as u8 as i8 as i16),
-            Disp16 => Operand::Displacement(self.dispabs as i16),
+            JmpDisp8 => Operand::JmpDisplacement(self.dispabs as u8 as i8 as i16),
+            JmpDisp16 => Operand::JmpDisplacement(self.dispabs as i16),
             RegList => Operand::RegList(self.imm_wide as u8),
             INTBL => Operand::Register(Register::INTBL),
             INTBH => Operand::Register(Register::INTBH),
@@ -701,7 +757,7 @@ enum OperandCategory {
     OpEB,
     SrcDestRegOrDeref,
     Imm4Dest,
-    DispOpcodeLow3,
+    JmpDispOpcodeLow3,
 }
 
 enum OperandInterpretation {
@@ -816,22 +872,22 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         0b0101_1101 => (Opcode::BTST, Just([OperandSpec::Bit5, OperandSpec::Disp8_SB, OperandSpec::Nothing])),
         0b0101_1110 => (Opcode::BTST, Just([OperandSpec::Bit6, OperandSpec::Disp8_SB, OperandSpec::Nothing])),
         0b0101_1111 => (Opcode::BTST, Just([OperandSpec::Bit7, OperandSpec::Disp8_SB, OperandSpec::Nothing])),
-        0b0110_0000 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0001 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0010 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0011 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0100 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0101 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0110 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_0111 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::DispOpcodeLow3)),
-        0b0110_1000 => (Opcode::JGEU, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1001 => (Opcode::JGTU, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1010 => (Opcode::JEQ, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1011 => (Opcode::JN, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1100 => (Opcode::JLTU, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1101 => (Opcode::JLEU, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1110 => (Opcode::JNE, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b0110_1111 => (Opcode::JPZ, Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_0000 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0001 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0010 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0011 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0100 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0101 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0110 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_0111 => (Opcode::JMP(Size::S), Reinterpret(OperandCategory::JmpDispOpcodeLow3)),
+        0b0110_1000 => (Opcode::JGEU, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1001 => (Opcode::JGTU, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1010 => (Opcode::JEQ, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1011 => (Opcode::JN, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1100 => (Opcode::JLTU, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1101 => (Opcode::JLEU, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1110 => (Opcode::JNE, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b0110_1111 => (Opcode::JPZ, Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b0111_0000 => (Opcode::MULU(size), Reinterpret(OperandCategory::SrcDestRegOrDeref)),
         0b0111_0001 => (Opcode::MULU(size), Reinterpret(OperandCategory::SrcDestRegOrDeref)),
         0b0111_0010 => (Opcode::MOV(size), Reinterpret(OperandCategory::SrcDestRegOrDeref)),
@@ -964,17 +1020,17 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         0b1111_0001 => (Opcode::SHA(size), Reinterpret(OperandCategory::Imm4Dest)),
         0b1111_0010 => (Opcode::DEC(Size::W), Just([OperandSpec::A0, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_0011 => (Opcode::RTS, Just([OperandSpec::Nothing, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_0100 => (Opcode::JMP(Size::W), Just([OperandSpec::Disp16, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_0101 => (Opcode::JSR_W, Just([OperandSpec::Disp16, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b1111_0100 => (Opcode::JMP(Size::W), Just([OperandSpec::JmpDisp16, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b1111_0101 => (Opcode::JSR(Size::W), Just([OperandSpec::JmpDisp16, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_0110 => (Opcode::INTO, Just([OperandSpec::Nothing, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_0111 => { return Err(DecodeError::InvalidOperand); },
         0b1111_1000 => (Opcode::ADJNZ(size), Reinterpret(OperandCategory::ADJNZ)),
         0b1111_1001 => (Opcode::ADJNZ(size), Reinterpret(OperandCategory::ADJNZ)),
         0b1111_1010 => (Opcode::DEC(Size::W), Just([OperandSpec::A1, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_1011 => (Opcode::REIT, Just([OperandSpec::Nothing, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_1100 => (Opcode::JMP(Size::A), Just([OperandSpec::Abs20, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_1101 => (Opcode::JSR_A, Just([OperandSpec::Abs20, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_1110 => (Opcode::JMP(Size::B), Just([OperandSpec::Disp8, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b1111_1100 => (Opcode::JMP(Size::A), Just([OperandSpec::JmpAbs20, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b1111_1101 => (Opcode::JSR(Size::A), Just([OperandSpec::JmpAbs20, OperandSpec::Nothing, OperandSpec::Nothing])),
+        0b1111_1110 => (Opcode::JMP(Size::B), Just([OperandSpec::JmpDisp8, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_1111 => (Opcode::UND, Just([OperandSpec::Nothing, OperandSpec::Nothing, OperandSpec::Nothing])),
     };
     inst.opcode = opcode;
@@ -1001,6 +1057,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
                         inst.imm_wide = read_imm(bytes, 1)? as u32;
                         inst.length += 1;
                     },
+                    JmpDisp8 |
                     Disp8 |
                     Disp8_FB |
                     Disp8_SB => {
@@ -1008,13 +1065,14 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
                         inst.dispabs = read_imm(bytes, 1)? as i8 as i16 as u16;
                         inst.length += 1;
                     }
-                    Disp16 |
+                    JmpDisp16 |
                     Abs16 => {
                         inst.dispabs = read_imm(bytes, 2)? as u16;
                         inst.length += 2;
                     }
+                    JmpAbs20 |
                     Abs20 => {
-                        inst.dispabs = read_imm(bytes, 3)? as u16;
+                        inst.imm_wide = read_imm(bytes, 3)? as u32 & 0x0f_ff_ff;
                         inst.length += 3;
                     }
                     Disp8_A0 |
@@ -1094,7 +1152,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
             inst.operands[1] = Operand_RegDerefDispAbs(operands & 0b1111, size, inst, bytes)?;
             inst.operands[2] = OperandSpec::Nothing;
         }
-        Reinterpret(OperandCategory::DispOpcodeLow3) => {
+        Reinterpret(OperandCategory::JmpDispOpcodeLow3) => {
             inst.dispabs = (byte & 0b111) as u16;
             inst.operands[0] = OperandSpec::Disp8;
             inst.operands[1] = OperandSpec::Nothing;
@@ -1589,7 +1647,7 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 Opcode::JMPI, Opcode::JSRI,
                 Opcode::JMPI, Opcode::JSRI,
             ][op as usize];
-            inst.operands[0] = Operand_RegDerefDisp20Abs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDisp20Abs(byte & 0b1111, inst, bytes)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b0100 => {
@@ -2027,15 +2085,15 @@ fn Operand_second_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, in
     Ok(spec)
 }
 
-fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, size: Size, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
+fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
     use OperandSpec::*;
     let (imm_size, spec) = match code {
-        0b0000 => (0, { if size == Size::B { R0L } else { R0 } }),
-        0b0001 => (0, { if size == Size::B { R0H } else { R1 } }),
-        0b0010 => (0, { if size == Size::B { R1L } else { R2 } }),
-        0b0011 => (0, { if size == Size::B { R1H } else { R3 } }),
-        0b0100 => (0, A0),
-        0b0101 => (0, A1),
+        0b0000 => (0, R2R0),
+        0b0001 => (0, R3R1),
+        0b0010 => { return Err(DecodeError::InvalidOperand); },
+        0b0011 => { return Err(DecodeError::InvalidOperand); },
+        0b0100 => (0, A1A0),
+        0b0101 => { return Err(DecodeError::InvalidOperand); },
         0b0110 => (0, Deref_A0),
         0b0111 => (0, Deref_A1),
         0b1000 => (1, Disp8_A0),
