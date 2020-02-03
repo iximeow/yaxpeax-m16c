@@ -2122,6 +2122,7 @@ fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruct
     };
 
     match imm_size {
+        0 => {}
         1 => {
             inst.dispabs = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16;
             inst.length += 1;
