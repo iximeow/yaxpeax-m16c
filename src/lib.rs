@@ -1056,6 +1056,20 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
                     RegList => {
                         inst.imm_wide = read_imm(bytes, 1)? as u32;
                         inst.length += 1;
+
+                        // internally, the register list is given one order.
+                        // however, the m16c encoding specifies reverse order for pushm/popm
+                        // register lists.. so, reverse it here and make it correct for everyone
+                        // else.
+                        if let Opcode::POPM = inst.opcode {
+                            let mut replacement_imm = 0u8;
+                            for i in 0..8 {
+                                if inst.imm_wide & (1 << i) != 0 {
+                                    replacement_imm |= 1 << (7 - i);
+                                }
+                            }
+                            inst.imm_wide = replacement_imm as u32;
+                        }
                     },
                     JmpDisp8 |
                     Disp8 |
