@@ -728,16 +728,14 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         0b0000_0101 => (Opcode::MOV(Size::B), Just([OperandSpec::R0H, OperandSpec::Disp8_SB, OperandSpec::Nothing])),
         0b0000_0110 => (Opcode::MOV(Size::B), Just([OperandSpec::R0H, OperandSpec::Disp8_FB, OperandSpec::Nothing])),
         0b0000_0111 => (Opcode::MOV(Size::B), Just([OperandSpec::R0H, OperandSpec::Abs16, OperandSpec::Nothing])),
-        0b0000_1000 |
-        0b0000_1001 |
-        0b0000_1010 |
-        0b0000_1011 |
-        0b0000_1100 |
-        0b0000_1101 |
-        0b0000_1110 |
-        0b0000_1111 => {
-            return Err(DecodeError::InvalidOperand);
-        },
+        0b0000_1000 => (Opcode::MOV(Size::B), Just([OperandSpec::R0H, OperandSpec::R0L, OperandSpec::Nothing])),
+        0b0000_1001 => (Opcode::MOV(Size::B), Just([OperandSpec::Disp8_SB, OperandSpec::R0L, OperandSpec::Nothing])),
+        0b0000_1010 => (Opcode::MOV(Size::B), Just([OperandSpec::Disp8_FB, OperandSpec::R0L, OperandSpec::Nothing])),
+        0b0000_1011 => (Opcode::MOV(Size::B), Just([OperandSpec::Abs16, OperandSpec::R0L, OperandSpec::Nothing])),
+        0b0000_1100 => (Opcode::MOV(Size::B), Just([OperandSpec::R0L, OperandSpec::R0H, OperandSpec::Nothing])),
+        0b0000_1101 => (Opcode::MOV(Size::B), Just([OperandSpec::Disp8_SB, OperandSpec::R0H, OperandSpec::Nothing])),
+        0b0000_1110 => (Opcode::MOV(Size::B), Just([OperandSpec::Disp8_FB, OperandSpec::R0H, OperandSpec::Nothing])),
+        0b0000_1111 => (Opcode::MOV(Size::B), Just([OperandSpec::Abs16, OperandSpec::R0H, OperandSpec::Nothing])),
         0b0001_0000 => (Opcode::AND(Size::B), Just([OperandSpec::R0H, OperandSpec::R0L, OperandSpec::Nothing])), // src is written R0L/R0H, what picks the register?
         0b0001_0001 => (Opcode::AND(Size::B), Just([OperandSpec::Disp8_SB, OperandSpec::R0L, OperandSpec::Nothing])),
         0b0001_0010 => (Opcode::AND(Size::B), Just([OperandSpec::Disp8_FB, OperandSpec::R0L, OperandSpec::Nothing])),
