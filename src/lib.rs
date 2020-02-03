@@ -411,13 +411,19 @@ impl fmt::Display for Operand {
                     write!(f, "[$+{}]", *offset)
                 }
             }
+            Operand::AbsoluteBit(addr) => {
+                write!(f, "[#{:x}h]", addr)
+            }
+            // `Absolute` can be a 20-bit address, so `addr` here is u32 rathere than u16 above.
             Operand::Absolute(addr) => {
                 write!(f, "[#{:x}h]", addr)
             }
             Operand::JmpAbsolute(addr) => {
                 write!(f, "#{:x}h", addr)
             }
-            _ => Ok(())
+            Operand::RegisterBit(reg, bit) => {
+                write!(f, "{},{}", bit, reg)
+            }
         }
     }
 }
