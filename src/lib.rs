@@ -8,7 +8,7 @@ extern crate serde_derive;
 
 use core::fmt;
 
-use yaxpeax_arch::{Arch, Decoder, LengthedInstruction};
+use yaxpeax_arch::{Arch, AddressDiff, Decoder, LengthedInstruction};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone)]
@@ -682,13 +682,13 @@ impl fmt::Display for Instruction {
 }
 
 impl LengthedInstruction for Instruction {
-    type Unit = <M16C as Arch>::Address;
+    type Unit = AddressDiff<<M16C as Arch>::Address>;
 
     fn min_size() -> Self::Unit {
-        1
+        AddressDiff::from_const(1)
     }
     fn len(&self) -> Self::Unit {
-        self.length as u32
+        AddressDiff::from_const(self.length as u32)
     }
 }
 
