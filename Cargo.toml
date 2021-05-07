@@ -5,10 +5,10 @@ edition = "2018"
 license = "0BSD"
 name = "yaxpeax-m16c"
 repository = "http://git.iximeow.net/yaxpeax-m16c/"
-version = "0.0.3"
+version = "0.0.4"
 
 [dependencies]
-yaxpeax-arch = { version = "0.0.4", default-features = false, features = [] }
+yaxpeax-arch = { version = "0.0.5", default-features = false, features = [] }
 "num-traits" = { version = "0.2", default-features = false }
 "serde" = { version = "1.0", optional = true }
 "serde_json" = { version = "1.0", optional = true }
