@@ -1,4 +1,4 @@
-use yaxpeax_arch::{Decoder, LengthedInstruction};
+use yaxpeax_arch::{Decoder, LengthedInstruction, U8Reader};
 use yaxpeax_m16c::InstDecoder;
 
 use std::fmt::Write;
@@ -9,7 +9,8 @@ fn test_display(data: &[u8], expected: &'static str) {
 
 fn test_invalid(data: &[u8]) {
     let decoder = InstDecoder::default();
-    match decoder.decode(data.into_iter().map(|x| *x)) {
+    let mut reader = U8Reader::new(data);
+    match decoder.decode(&mut reader) {
         Ok(instr) => {
             assert!(false, "incorrectly decoded {:?} from {:02x?} under decoder {}", instr, data, decoder);
         },
@@ -25,7 +26,8 @@ fn test_display_under(decoder: &InstDecoder, data: &[u8], expected: &'static str
     for b in data {
         write!(hex, "{:02x}", b).unwrap();
     }
-    match decoder.decode(data.into_iter().map(|x| *x)) {
+    let mut reader = U8Reader::new(data);
+    match decoder.decode(&mut reader) {
         Ok(instr) => {
             let text = format!("{}", instr);
             assert!(
@@ -39,7 +41,7 @@ fn test_display_under(decoder: &InstDecoder, data: &[u8], expected: &'static str
             );
             // while we're at it, test that the instruction is as long, and no longer, than its
             // input
-            assert_eq!(instr.len() as usize, data.len(), "instruction length is incorrect, wanted instruction {}", expected);
+            assert_eq!(instr.len().to_const() as usize, data.len(), "instruction length is incorrect, wanted instruction {}", expected);
         },
         Err(e) => {
             assert!(false, "decode error ({}) for {} under decoder {}:\n  expected: {}\n", e, hex, decoder, expected);

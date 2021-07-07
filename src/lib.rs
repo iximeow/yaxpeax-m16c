@@ -8,7 +8,7 @@ extern crate serde_derive;
 
 use core::fmt;
 
-use yaxpeax_arch::{Arch, AddressDiff, Decoder, LengthedInstruction};
+use yaxpeax_arch::{Arch, AddressDiff, Decoder, LengthedInstruction, Reader, StandardDecodeError};
 
 #[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone)]
@@ -650,18 +650,15 @@ impl Instruction {
     }
 }
 
-#[cfg(feature="use-serde")]
-#[derive(Debug, Serialize, Deserialize)]
-pub struct M16C;
-
-#[cfg(not(feature="use-serde"))]
+#[cfg_attr(feature="use-serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct M16C;
 
 impl Arch for M16C {
     type Address = u32;
+    type Word = u8;
     type Instruction = Instruction;
-    type DecodeError = DecodeError;
+    type DecodeError = StandardDecodeError;
     type Decoder = InstDecoder;
     type Operand = Operand;
 }
@@ -704,29 +701,6 @@ impl Default for Instruction {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub enum DecodeError {
-    ExhaustedInput,
-    InvalidOpcode,
-    InvalidOperand,
-}
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f:  &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DecodeError::ExhaustedInput => write!(f, "exhausted input"),
-            DecodeError::InvalidOpcode => write!(f, "invalid opcode"),
-            DecodeError::InvalidOperand => write!(f, "invalid operand"),
-        }
-    }
-}
-
-impl yaxpeax_arch::DecodeError for DecodeError {
-    fn data_exhausted(&self) -> bool { self == &DecodeError::ExhaustedInput }
-    fn bad_opcode(&self) -> bool { self == &DecodeError::InvalidOpcode }
-    fn bad_operand(&self) -> bool { self == &DecodeError::InvalidOperand }
-}
-
 impl yaxpeax_arch::Instruction for Instruction {
     // currently only accept instructions that are well-defined.
     fn well_defined(&self) -> bool { true }
@@ -741,12 +715,9 @@ impl fmt::Display for InstDecoder {
     }
 }
 
-impl Decoder<Instruction> for InstDecoder {
-    type Error = DecodeError;
-
-    fn decode_into<T: IntoIterator<Item=u8>>(&self, inst: &mut Instruction, bytes: T) -> Result<(), DecodeError> {
-        let mut bytes_iter = bytes.into_iter();
-        decode(self, inst, &mut bytes_iter)
+impl Decoder<M16C> for InstDecoder {
+    fn decode_into<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(&self, inst: &mut Instruction, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+        decode(self, inst, words)
     }
 }
 
@@ -771,8 +742,8 @@ enum OperandInterpretation {
     Reinterpret(OperandCategory)
 }
 
-fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(_decoder: &InstDecoder, inst: &mut Instruction, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     // IF there is a size bit, it is the low bit of the first byte.
     let size = if byte & 1 == 0 {
@@ -909,7 +880,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         0b0111_1100 => (Opcode::NOP, Reinterpret(OperandCategory::Op7C)),
         0b0111_1101 => (Opcode::NOP, Reinterpret(OperandCategory::Op7D)),
         0b0111_1110 => (Opcode::NOP, Reinterpret(OperandCategory::Op7E)),
-        0b0111_1111 => { return Err(DecodeError::InvalidOperand); },
+        0b0111_1111 => { return Err(StandardDecodeError::InvalidOperand); },
         0b1000_0000 => (Opcode::TST(size), Reinterpret(OperandCategory::SrcDestRegOrDeref)),
         0b1000_0001 => (Opcode::TST(size), Reinterpret(OperandCategory::SrcDestRegOrDeref)),
         0b1000_0010 => (Opcode::PUSH(Size::B), Just([OperandSpec::R0L, OperandSpec::Nothing, OperandSpec::Nothing])),
@@ -1029,7 +1000,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         0b1111_0100 => (Opcode::JMP(Size::W), Just([OperandSpec::JmpDisp16, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_0101 => (Opcode::JSR(Size::W), Just([OperandSpec::JmpDisp16, OperandSpec::Nothing, OperandSpec::Nothing])),
         0b1111_0110 => (Opcode::INTO, Just([OperandSpec::Nothing, OperandSpec::Nothing, OperandSpec::Nothing])),
-        0b1111_0111 => { return Err(DecodeError::InvalidOperand); },
+        0b1111_0111 => { return Err(StandardDecodeError::InvalidOperand); },
         0b1111_1000 => (Opcode::ADJNZ(size), Reinterpret(OperandCategory::ADJNZ)),
         0b1111_1001 => (Opcode::ADJNZ(size), Reinterpret(OperandCategory::ADJNZ)),
         0b1111_1010 => (Opcode::DEC(Size::W), Just([OperandSpec::A1, OperandSpec::Nothing, OperandSpec::Nothing])),
@@ -1050,7 +1021,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
             // additionally, Imm8 or Imm16 is the first operand, if present. so look for that
             // first.
             if let OperandSpec::Imm8 = inst.operands[0] {
-                inst.imm_wide = read_imm(bytes, 1)? as u32;
+                inst.imm_wide = read_imm(words, 1)? as u32;
                 inst.length += 1;
             }
 
@@ -1060,7 +1031,7 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
                 use OperandSpec::*;
                 match op {
                     RegList => {
-                        inst.imm_wide = read_imm(bytes, 1)? as u32;
+                        inst.imm_wide = read_imm(words, 1)? as u32;
                         inst.length += 1;
 
                         // internally, the register list is given one order.
@@ -1082,17 +1053,17 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
                     Disp8_FB |
                     Disp8_SB => {
                         // have to sign extend in case these displacements are negative
-                        inst.dispabs = read_imm(bytes, 1)? as i8 as i16 as u16;
+                        inst.dispabs = read_imm(words, 1)? as i8 as i16 as u16;
                         inst.length += 1;
                     }
                     JmpDisp16 |
                     Abs16 => {
-                        inst.dispabs = read_imm(bytes, 2)? as u16;
+                        inst.dispabs = read_imm(words, 2)? as u16;
                         inst.length += 2;
                     }
                     JmpAbs20 |
                     Abs20 => {
-                        inst.imm_wide = read_imm(bytes, 3)? as u32 & 0x0f_ff_ff;
+                        inst.imm_wide = read_imm(words, 3)? as u32 & 0x0f_ff_ff;
                         inst.length += 3;
                     }
                     Disp8_A0 |
@@ -1131,45 +1102,45 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
 
             // now for STZX, really,...
             if let OperandSpec::Imm82 = inst.operands[2] {
-                inst.imm_wide |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32) << 8;
+                inst.imm_wide |= (words.next()? as u32) << 8;
                 inst.length += 1;
             }
 
             return Ok(());
         },
         Reinterpret(OperandCategory::Op74) => {
-            return decode_op74(inst, size, bytes);
+            return decode_op74(inst, size, words);
         },
         Reinterpret(OperandCategory::Op76) => {
-            return decode_op76(inst, size, bytes);
+            return decode_op76(inst, size, words);
         },
         Reinterpret(OperandCategory::Op78) => {
-            return decode_op78(inst, size, bytes);
+            return decode_op78(inst, size, words);
         },
         Reinterpret(OperandCategory::Op7A) => {
-            return decode_op7A(inst, size, bytes);
+            return decode_op7A(inst, size, words);
         },
         Reinterpret(OperandCategory::Op7B) => {
-            return decode_op7B(inst, size, bytes);
+            return decode_op7B(inst, size, words);
         },
         Reinterpret(OperandCategory::Op7C) => {
-            return decode_op7C(inst, size, bytes);
+            return decode_op7C(inst, size, words);
         },
         Reinterpret(OperandCategory::Op7D) => {
-            return decode_op7D(inst, size, bytes);
+            return decode_op7D(inst, size, words);
         },
         Reinterpret(OperandCategory::Op7E) => {
-            return decode_op7E(inst, size, bytes);
+            return decode_op7E(inst, size, words);
         },
         Reinterpret(OperandCategory::OpEB) => {
-            return decode_opEB(inst, size, bytes);
+            return decode_opEB(inst, size, words);
         },
         Reinterpret(OperandCategory::Imm4Dest) => {
-            let operands = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+            let operands = words.next()?;
             inst.length += 1;
             inst.imm_wide = (operands as i8 >> 4) as i32 as u32;
             inst.operands[0] = OperandSpec::Imm4;
-            inst.operands[1] = Operand_RegDerefDispAbs(operands & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(operands & 0b1111, size, inst, words)?;
             inst.operands[2] = OperandSpec::Nothing;
         }
         Reinterpret(OperandCategory::JmpDispOpcodeLow3) => {
@@ -1181,149 +1152,149 @@ fn decode<T: Iterator<Item=u8>>(_decoder: &InstDecoder, inst: &mut Instruction, 
         Reinterpret(OperandCategory::ADJNZ) => {
             // ADJNZ has operands like any other [IMM4|DEST] operand, but takes an additional byte
             // for the destination label.
-            let operands = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+            let operands = words.next()?;
             inst.length += 1;
             inst.imm_wide = ((operands as i8) >> 4) as u32;
             inst.operands[0] = OperandSpec::Imm4;
-            inst.operands[1] = Operand_RegDerefDispAbs(operands & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(operands & 0b1111, size, inst, words)?;
             inst.operands[2] = OperandSpec::Label8;
         }
         Reinterpret(OperandCategory::SrcDestRegOrDeref) => {
             // these instructions can read two disp8/disp16, so the first one can be handled
             // normally, but the second will need some fixing up...
-            let operands = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+            let operands = words.next()?;
             inst.length += 1;
-            inst.operands[0] = Operand_RegDerefDispAbs(operands >> 4, size, inst, bytes)?;
-            inst.operands[1] = Operand_second_RegDerefDispAbs(operands & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(operands >> 4, size, inst, words)?;
+            inst.operands[1] = Operand_second_RegDerefDispAbs(operands & 0b1111, size, inst, words)?;
             inst.operands[2] = OperandSpec::Nothing;
         }
     }
     Ok(())
 }
 
-fn decode_op74<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op74<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     match byte >> 4 {
         0b0000 => {
             inst.opcode = Opcode::STE;
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Abs20;
-            inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+            inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
             inst.length += 3;
         }
         0b0001 => {
             inst.opcode = Opcode::STE;
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Disp20_A0;
-            inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+            inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
             inst.length += 3;
         }
         0b0010 => {
             inst.opcode = Opcode::STE;
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Deref_A1A0;
         }
         0b0011 => {
             inst.opcode = Opcode::MOV(size);
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Disp8_SP;
         }
         0b0100 => {
             inst.opcode = Opcode::PUSH(size);
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b0101 => {
             inst.opcode = Opcode::NEG;
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b0110 => {
             inst.opcode = Opcode::ROT(size);
             if size == Size::W && byte & 0b1111 == 0b0001 {
                 // invalid dest, would be R1
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             } else if size == Size::B && byte & 0b1111 == 0b0011 {
                 // invalid dest, would be R1H
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             }
 
             inst.operands[0] = OperandSpec::R1H;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         }
         0b0111 => {
             inst.opcode = Opcode::NOT(size);
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b1000 => {
             inst.opcode = Opcode::LDE;
             inst.operands[0] = OperandSpec::Abs20;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             // careful! abs20 comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+            inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
             inst.length += 3;
         }
         0b1001 => {
             inst.opcode = Opcode::LDE;
             inst.operands[0] = OperandSpec::Disp20_A0;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             // careful! disp20 comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+            inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
             inst.length += 3;
         }
         0b1010 => {
             inst.opcode = Opcode::LDE;
             inst.operands[0] = OperandSpec::Deref_A1A0;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         }
         0b1011 => {
             inst.opcode = Opcode::MOV(size);
             inst.operands[0] = OperandSpec::Disp8_SP;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             // careful! disp8 comes after dest disp/abs
-            inst.dispabs = read_imm(bytes, 1)? as u16;
+            inst.dispabs = read_imm(words, 1)? as u16;
             inst.length += 1;
         }
         0b1100 => {
             inst.opcode = Opcode::MOV(size);
             inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             // careful! imm comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, size.as_bytes())? as u32;
+            inst.imm_wide = read_imm(words, size.as_bytes())? as u32;
             inst.length += size.as_bytes();
         }
         0b1101 => {
             inst.opcode = Opcode::POP;
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b1110 => {
             inst.opcode = Opcode::SHL(size);
             if size == Size::W && byte & 0b1111 == 0b0001 {
                 // invalid dest, would be R1
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             } else if size == Size::B && byte & 0b1111 == 0b0011 {
                 // invalid dest, would be R1H
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             }
 
             inst.operands[0] = OperandSpec::R1H;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         }
         0b1111 => {
             inst.opcode = Opcode::SHA(size);
             if size == Size::W && byte & 0b1111 == 0b0001 {
                 // invalid dest, would be R1
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             } else if size == Size::B && byte & 0b1111 == 0b0011 {
                 // invalid dest, would be R1H
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             }
 
             inst.operands[0] = OperandSpec::R1H;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         }
         _ => {
             unreachable!("opcode selector is four bits");
@@ -1333,8 +1304,8 @@ fn decode_op74<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
     Ok(())
 }
 
-fn decode_op76<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op76<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     let opc_selector = byte >> 4;
     if opc_selector < 0b1001 {
@@ -1343,49 +1314,49 @@ fn decode_op76<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
             Opcode::OR(size), Opcode::ADD(size), Opcode::SUB(size),
             Opcode::ADC(size), Opcode::SBB(size), Opcode::CMP(size)
         ][opc_selector as usize];
-        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-        inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+        inst.imm_wide = read_imm(words, size.as_bytes())?;
         inst.length += size.as_bytes();
     } else {
         match opc_selector {
             0b1001 => {
                 inst.opcode = Opcode::DIVX(size);
                 inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-                inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                inst.imm_wide = read_imm(words, size.as_bytes())?;
                 inst.length += size.as_bytes();
             }
             0b1010 => {
                 inst.opcode = Opcode::ROLC;
-                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
                 inst.operands[1] = OperandSpec::Nothing;
             }
             0b1011 => {
                 inst.opcode = Opcode::RORC;
-                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
                 inst.operands[1] = OperandSpec::Nothing;
             }
             0b1100 => {
                 inst.opcode = Opcode::DIVU(size);
                 inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-                inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                inst.imm_wide = read_imm(words, size.as_bytes())?;
                 inst.length += size.as_bytes();
             }
             0b1101 => {
                 inst.opcode = Opcode::DIV(size);
-                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
                 inst.operands[1] = OperandSpec::Nothing;
             }
             0b1110 => {
                 inst.opcode = Opcode::ADCF(size);
-                inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+                inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
                 inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-                inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                inst.imm_wide = read_imm(words, size.as_bytes())?;
                 inst.length += size.as_bytes();
             }
             0b1111 => {
                 inst.opcode = Opcode::ABS;
-                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+                inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
                 inst.operands[1] = OperandSpec::Nothing;
             }
             _ => {
@@ -1397,74 +1368,74 @@ fn decode_op76<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
     Ok(())
 }
 
-fn decode_op78<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op78<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     inst.opcode = Opcode::MUL;
-    inst.operands[0] = Operand_RegDerefDispAbs(byte >> 4, size, inst, bytes)?;
+    inst.operands[0] = Operand_RegDerefDispAbs(byte >> 4, size, inst, words)?;
     let dest_code = byte & 0b1111;
     match (size, dest_code) {
         (Size::B, 0b0001) |
         (Size::W, 0b0010) |
         (_, 0b0011) |
         (_, 0b0101) => {
-            return Err(DecodeError::InvalidOperand);
+            return Err(StandardDecodeError::InvalidOperand);
         }
         _ => {}
     }
-    inst.operands[1] = Operand_RegDerefDispAbs(dest_code, size, inst, bytes)?;
+    inst.operands[1] = Operand_RegDerefDispAbs(dest_code, size, inst, words)?;
 
     Ok(())
 }
 
-fn decode_op7A<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op7A<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     if byte >= 0b10000000 {
         inst.opcode = Opcode::LDC;
-        inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+        inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         inst.operands[1] = Operand_IntFlgSpSbFb((byte >> 4) & 0b111)?;
     } else {
         inst.opcode = Opcode::XCHG(size);
         assert_eq!(size, Size::B);
         if byte >= 0b01000000 {
-            return Err(DecodeError::InvalidOperand);
+            return Err(StandardDecodeError::InvalidOperand);
         }
         inst.operands[0] = [
             OperandSpec::R0L, OperandSpec::R0H,
             OperandSpec::R1L, OperandSpec::R1H,
         ][(byte >> 4) as usize];
-        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
     }
 
     Ok(())
 }
 
-fn decode_op7B<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op7B<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     if byte >= 0b10000000 {
         inst.opcode = Opcode::STC;
         inst.operands[1] = Operand_IntFlgSpSbFb((byte >> 4) & 0b111)?;
-        inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+        inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
     } else {
         inst.opcode = Opcode::XCHG(size);
         assert_eq!(size, Size::W);
         if byte >= 0b01000000 {
-            return Err(DecodeError::InvalidOperand);
+            return Err(StandardDecodeError::InvalidOperand);
         }
         inst.operands[0] = [
             OperandSpec::R0, OperandSpec::R1,
             OperandSpec::R2, OperandSpec::R3,
         ][(byte >> 4) as usize];
-        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+        inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
     }
 
     Ok(())
 }
 
-fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op7C<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     match byte >> 4 {
         op @ 0b0000 |
@@ -1475,43 +1446,43 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 Opcode::MOVLL, Opcode::MOVLH,
                 Opcode::MOVHL, Opcode::MOVHH,
             ][op as usize];
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::R0L;
         },
         0b0100 => {
             inst.opcode = Opcode::MULU(size);
             inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, words)?;
             let dest_code = byte & 0b1111;
             match (size, dest_code) {
                 (Size::B, 0b0001) |
                 (Size::W, 0b0010) |
                 (_, 0b0011) |
                 (_, 0b0101) => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 _ => {}
             }
             // careful! imm comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+            inst.imm_wide = read_imm(words, size.as_bytes())?;
             inst.length += size.as_bytes();
         },
         0b0101 => {
             inst.opcode = Opcode::MUL;
             inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, words)?;
             let dest_code = byte & 0b1111;
             match (size, dest_code) {
                 (Size::B, 0b0001) |
                 (Size::W, 0b0010) |
                 (_, 0b0011) |
                 (_, 0b0101) => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 _ => {}
             }
             // careful! imm comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+            inst.imm_wide = read_imm(words, size.as_bytes())?;
             inst.length += size.as_bytes();
         }
         0b0110 => {
@@ -1522,11 +1493,11 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b0011 |
                 0b0100 |
                 0b0101 => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 _ => {}
             }
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         op @ 0b1000 |
@@ -1538,7 +1509,7 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 Opcode::MOVHL, Opcode::MOVHH,
             ][(op & 0b11) as usize];
             inst.operands[0] = OperandSpec::R0L;
-            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
         }
         0b1100 => {
             inst.opcode = Opcode::EXTS;
@@ -1546,13 +1517,13 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b0010 |
                 0b0011 |
                 0b0101 => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 0b0000 => OperandSpec::R2R0,
                 0b0001 => OperandSpec::R3R1,
                 0b0100 => OperandSpec::A1A0,
                 code => {
-                    Operand_RegDerefDispAbs(code, size, inst, bytes)?
+                    Operand_RegDerefDispAbs(code, size, inst, words)?
                 }
             };
             inst.operands[0] = dest;
@@ -1573,7 +1544,7 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                         inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
                         inst.operands[1] = OperandSpec::Nothing;
                         inst.operands[2] = OperandSpec::Nothing;
-                        inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                        inst.imm_wide = read_imm(words, size.as_bytes())?;
                         inst.length += size.as_bytes();
                     }
                     op @ 0b1000 |
@@ -1590,7 +1561,7 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                         inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
                         inst.operands[1] = OperandSpec::SP;
                         inst.operands[2] = OperandSpec::Nothing;
-                        inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                        inst.imm_wide = read_imm(words, size.as_bytes())?;
                         inst.length += size.as_bytes();
                     }
                     _ => { unreachable!("this should be an invalid bit pattern"); }
@@ -1609,7 +1580,7 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                     inst.operands[0] = OperandSpec::Imm8;
                     inst.operands[1] = OperandSpec::R0L;
                     assert_eq!(size, Size::B);
-                    inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                    inst.imm_wide = read_imm(words, size.as_bytes())?;
                     inst.length += size.as_bytes();
                 }
             }
@@ -1619,10 +1590,10 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b0000 => {
                     inst.opcode = Opcode::LDCTX;
                     inst.operands[0] = OperandSpec::Abs16;
-                    inst.dispabs = read_imm(bytes, 2)? as u16;
+                    inst.dispabs = read_imm(words, 2)? as u16;
                     inst.length += 2;
                     inst.operands[1] = OperandSpec::Abs20;
-                    inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+                    inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
                     inst.length += 3;
                 }
                 0b0001 => {
@@ -1633,7 +1604,7 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b0010 => {
                     inst.opcode = Opcode::ENTER;
                     inst.operands[0] = OperandSpec::Imm8;
-                    inst.imm_wide = read_imm(bytes, 1)?;
+                    inst.imm_wide = read_imm(words, 1)?;
                     inst.length += 1;
                     inst.operands[1] = OperandSpec::Nothing;
                 }
@@ -1643,20 +1614,20 @@ fn decode_op7C<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                     inst.operands[1] = OperandSpec::Nothing;
                 }
                 _ => {
-                    return Err(DecodeError::InvalidOpcode);
+                    return Err(StandardDecodeError::InvalidOpcode);
                 }
             }
         }
         _ => {
-            return Err(DecodeError::InvalidOpcode);
+            return Err(StandardDecodeError::InvalidOpcode);
         }
     }
 
     Ok(())
 }
 
-fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op7D<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     match byte >> 4 {
         op @ 0b0000 |
@@ -1667,60 +1638,60 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 Opcode::JMPI, Opcode::JSRI,
                 Opcode::JMPI, Opcode::JSRI,
             ][op as usize];
-            inst.operands[0] = Operand_RegDerefDisp20Abs(byte & 0b1111, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDisp20Abs(byte & 0b1111, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b0100 => {
             inst.opcode = Opcode::MULU(size);
             inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, words)?;
             let dest_code = byte & 0b1111;
             match (size, dest_code) {
                 (Size::B, 0b0001) |
                 (Size::W, 0b0010) |
                 (_, 0b0011) |
                 (_, 0b0101) => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 _ => {}
             }
             // careful! imm comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+            inst.imm_wide = read_imm(words, size.as_bytes())?;
             inst.length += size.as_bytes();
         },
         0b0101 => {
             inst.opcode = Opcode::MUL;
             inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
-            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, bytes)?;
+            inst.operands[1] = Operand_RegDerefDispAbs(byte >> 4, size, inst, words)?;
             let dest_code = byte & 0b1111;
             match (size, dest_code) {
                 (Size::B, 0b0001) |
                 (Size::W, 0b0010) |
                 (_, 0b0011) |
                 (_, 0b0101) => {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
                 _ => {}
             }
             // careful! imm comes after dest disp/abs
-            inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+            inst.imm_wide = read_imm(words, size.as_bytes())?;
             inst.length += size.as_bytes();
         }
         0b1001 => {
             // byte is 0b1001_xxxx
             if byte < 0b1001_1000 {
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             }
             // byte is 0b1001_1xxx
 
             inst.opcode = Opcode::PUSHA;
             // while the low eight forms of this encoding are invalid, they would have been rejected above.
-            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, bytes)?;
+            inst.operands[0] = Operand_RegDerefDispAbs(byte & 0b1111, size, inst, words)?;
             inst.operands[1] = OperandSpec::Nothing;
         }
         0b1010 => {
             if byte >= 0b1010_1000 {
-                return Err(DecodeError::InvalidOperand);
+                return Err(StandardDecodeError::InvalidOperand);
             }
             inst.opcode = Opcode::LDIPL;
             inst.operands[0] = OperandSpec::Imm8;
@@ -1743,18 +1714,18 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b1101 => Opcode::JNO,
                 0b1110 => Opcode::JLT,
                 _ => {
-                    return Err(DecodeError::InvalidOpcode);
+                    return Err(StandardDecodeError::InvalidOpcode);
                 }
             };
             inst.operands[0] = OperandSpec::Disp8;
             inst.operands[1] = OperandSpec::Nothing;
-            inst.imm_wide = read_imm(bytes, 1)?;
+            inst.imm_wide = read_imm(words, 1)?;
             inst.length += 1;
         }
         0b1101 => {
             let code = byte & 0b1111;
             if code == 0b1011 || code == 0b1111 {
-                return Err(DecodeError::InvalidOpcode);
+                return Err(StandardDecodeError::InvalidOpcode);
             }
             // the NOP here fill gaps that are invalid encodings as tested above.
             inst.opcode = [
@@ -1781,7 +1752,7 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                         inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
                         inst.operands[1] = OperandSpec::Nothing;
                         inst.operands[2] = OperandSpec::Nothing;
-                        inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                        inst.imm_wide = read_imm(words, size.as_bytes())?;
                         inst.length += size.as_bytes();
                     }
                     op @ 0b1000 |
@@ -1798,7 +1769,7 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                         inst.operands[0] = if size == Size::W { OperandSpec::Imm16 } else { OperandSpec::Imm8 };
                         inst.operands[1] = OperandSpec::SP;
                         inst.operands[2] = OperandSpec::Nothing;
-                        inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                        inst.imm_wide = read_imm(words, size.as_bytes())?;
                         inst.length += size.as_bytes();
                     }
                     _ => { unreachable!("this should be an invalid bit pattern"); }
@@ -1817,7 +1788,7 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                     inst.operands[0] = OperandSpec::Imm16;
                     inst.operands[1] = OperandSpec::R0;
                     assert_eq!(size, Size::W);
-                    inst.imm_wide = read_imm(bytes, size.as_bytes())?;
+                    inst.imm_wide = read_imm(words, size.as_bytes())?;
                     inst.length += size.as_bytes();
                 }
             }
@@ -1828,10 +1799,10 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                 0b0000 => {
                     inst.opcode = Opcode::STCTX;
                     inst.operands[0] = OperandSpec::Abs16;
-                    inst.dispabs = read_imm(bytes, 2)? as u16;
+                    inst.dispabs = read_imm(words, 2)? as u16;
                     inst.length += 2;
                     inst.operands[1] = OperandSpec::Abs20;
-                    inst.imm_wide = read_imm(bytes, 3)? & 0x0f_ff_ff;
+                    inst.imm_wide = read_imm(words, 3)? & 0x0f_ff_ff;
                     inst.length += 3;
                 }
                 0b0001 => {
@@ -1850,31 +1821,31 @@ fn decode_op7D<T: Iterator<Item=u8>>(inst: &mut Instruction, size: Size, bytes: 
                     inst.operands[1] = OperandSpec::Nothing;
                 }
                 _ => {
-                    return Err(DecodeError::InvalidOpcode);
+                    return Err(StandardDecodeError::InvalidOpcode);
                 }
             }
         }
         _ => {
-            return Err(DecodeError::InvalidOpcode);
+            return Err(StandardDecodeError::InvalidOpcode);
         }
     }
 
     Ok(())
 }
 
-fn decode_op7E<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_op7E<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, _size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     let op = byte >> 4;
     let code = byte & 0b1111;
     if op > 0b1101 {
-        return Err(DecodeError::InvalidOpcode);
+        return Err(StandardDecodeError::InvalidOpcode);
     }
     if op == 0b0010 {
         // handle BMCMD specifically
-        inst.operands[0] = Operand_BitRegDerefDispAbs(code, inst, bytes)?;
+        inst.operands[0] = Operand_BitRegDerefDispAbs(code, inst, words)?;
         inst.operands[1] = OperandSpec::Nothing;
-        let cnd = read_imm(bytes, 1)? as u8;
+        let cnd = read_imm(words, 1)? as u8;
         inst.length += 1;
         inst.opcode = match cnd {
             0b0000_0000 => Opcode::BMGEU,
@@ -1892,7 +1863,7 @@ fn decode_op7E<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes:
             0b1111_1101 => Opcode::BMNO,
             0b1111_1110 => Opcode::BMLT,
             _ => {
-                return Err(DecodeError::InvalidOpcode);
+                return Err(StandardDecodeError::InvalidOpcode);
             }
         };
     } else {
@@ -1903,15 +1874,15 @@ fn decode_op7E<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes:
             Opcode::BSET,  Opcode::BNOT,  Opcode::BTST,
             Opcode::BXOR,  Opcode::BNXOR,
         ][op as usize];
-        inst.operands[0] = Operand_BitRegDerefDispAbs(code, inst, bytes)?;
+        inst.operands[0] = Operand_BitRegDerefDispAbs(code, inst, words)?;
         inst.operands[1] = OperandSpec::Nothing;
     }
 
     Ok(())
 }
 
-fn decode_opEB<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes: &mut T) -> Result<(), DecodeError> {
-    let byte = bytes.next().ok_or(DecodeError::ExhaustedInput)?;
+fn decode_opEB<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(inst: &mut Instruction, _size: Size, words: &mut T) -> Result<(), <M16C as Arch>::DecodeError> {
+    let byte = words.next()?;
     inst.length += 1;
     let upper = byte >> 4;
     let lower = byte & 0b1111;
@@ -1923,7 +1894,7 @@ fn decode_opEB<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes:
                 inst.opcode = Opcode::LDC;
                 inst.operands[0] = OperandSpec::Imm16;
                 inst.operands[1] = Operand_IntFlgSpSbFb((byte >> 4) & 0b111)?;
-                inst.imm_wide = read_imm(bytes, 2)?;
+                inst.imm_wide = read_imm(words, 2)?;
                 inst.length += 2;
             }
             0b0001 => {
@@ -1955,14 +1926,14 @@ fn decode_opEB<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes:
                 inst.opcode = Opcode::MOVA;
                 let src = byte & 0b1111;
                 if src < 0b1000 {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
-                inst.operands[0] = Operand_RegDerefDispAbs(src, Size::W, inst, bytes)?;
+                inst.operands[0] = Operand_RegDerefDispAbs(src, Size::W, inst, words)?;
                 let dest = byte >> 4;
                 if dest >= 0b1000 {
-                    return Err(DecodeError::InvalidOperand);
+                    return Err(StandardDecodeError::InvalidOperand);
                 }
-                inst.operands[1] = Operand_RegDerefDispAbs(dest, Size::W, inst, bytes)?;
+                inst.operands[1] = Operand_RegDerefDispAbs(dest, Size::W, inst, words)?;
             }
         }
     } else {
@@ -1983,12 +1954,12 @@ fn decode_opEB<T: Iterator<Item=u8>>(inst: &mut Instruction, _size: Size, bytes:
     Ok(())
 }
 
-fn read_imm<T: Iterator<Item=u8>>(bytes: &mut T, mut size: u8) -> Result<u32, DecodeError> {
+fn read_imm<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(words: &mut T, mut size: u8) -> Result<u32, <M16C as Arch>::DecodeError> {
     let mut imm: u32 = 0;
     let mut offset = 0;
 
     while size > 0 {
-        imm |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32) << (8 * offset);
+        imm |= (words.next()? as u32) << (8 * offset);
         offset += 1;
         size -= 1;
     }
@@ -1997,7 +1968,7 @@ fn read_imm<T: Iterator<Item=u8>>(bytes: &mut T, mut size: u8) -> Result<u32, De
 }
 
 
-fn Operand_BitRegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
+fn Operand_BitRegDerefDispAbs<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(code: u8, inst: &mut Instruction, words: &mut T) -> Result<OperandSpec, <M16C as Arch>::DecodeError> {
     use OperandSpec::*;
     // "bit,<reg>" addressing modes taking their bit selector from a following byte is left mostly
     // unspoken in the manual, aside from the "bit,Rn" and "bit,An" modes taking an extra byte.
@@ -2022,11 +1993,11 @@ fn Operand_BitRegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruc
     };
 
     if imm_size > 0 {
-        inst.dispabs = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16;
+        inst.dispabs = words.next()? as u16;
         inst.length += 1;
 
         if imm_size == 2 {
-            inst.dispabs |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16) << 8;
+            inst.dispabs |= (words.next()? as u16) << 8;
             inst.length += 1;
         }
     }
@@ -2035,7 +2006,7 @@ fn Operand_BitRegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruc
 
 }
 
-fn Operand_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
+fn Operand_RegDerefDispAbs<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(code: u8, size: Size, inst: &mut Instruction, words: &mut T) -> Result<OperandSpec, <M16C as Arch>::DecodeError> {
     use OperandSpec::*;
     let (imm_size, spec) = match code {
         0b0000 => (0, { if size == Size::B { R0L } else { R0 } }),
@@ -2058,11 +2029,11 @@ fn Operand_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, inst: &mu
     };
 
     if imm_size > 0 {
-        inst.dispabs = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16;
+        inst.dispabs = words.next()? as u16;
         inst.length += 1;
 
         if imm_size == 2 {
-            inst.dispabs |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16) << 8;
+            inst.dispabs |= (words.next()? as u16) << 8;
             inst.length += 1;
         }
     }
@@ -2070,7 +2041,7 @@ fn Operand_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, inst: &mu
     Ok(spec)
 }
 
-fn Operand_second_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
+fn Operand_second_RegDerefDispAbs<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(code: u8, size: Size, inst: &mut Instruction, words: &mut T) -> Result<OperandSpec, <M16C as Arch>::DecodeError> {
     use OperandSpec::*;
     let (imm_size, spec) = match code {
         0b0000 => (0, { if size == Size::B { R0L } else { R0 } }),
@@ -2093,11 +2064,11 @@ fn Operand_second_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, in
     };
 
     if imm_size > 0 {
-        inst.imm_wide = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32;
+        inst.imm_wide = words.next()? as u32;
         inst.length += 1;
 
         if imm_size == 2 {
-            inst.imm_wide |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32) << 8;
+            inst.imm_wide |= (words.next()? as u32) << 8;
             inst.length += 1;
         }
     }
@@ -2105,15 +2076,15 @@ fn Operand_second_RegDerefDispAbs<T: Iterator<Item=u8>>(code: u8, size: Size, in
     Ok(spec)
 }
 
-fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruction, bytes: &mut T) -> Result<OperandSpec, DecodeError> {
+fn Operand_RegDerefDisp20Abs<T: Reader<<M16C as Arch>::Address, <M16C as Arch>::Word>>(code: u8, inst: &mut Instruction, words: &mut T) -> Result<OperandSpec, <M16C as Arch>::DecodeError> {
     use OperandSpec::*;
     let (imm_size, spec) = match code {
         0b0000 => (0, R2R0),
         0b0001 => (0, R3R1),
-        0b0010 => { return Err(DecodeError::InvalidOperand); },
-        0b0011 => { return Err(DecodeError::InvalidOperand); },
+        0b0010 => { return Err(StandardDecodeError::InvalidOperand); },
+        0b0011 => { return Err(StandardDecodeError::InvalidOperand); },
         0b0100 => (0, A1A0),
-        0b0101 => { return Err(DecodeError::InvalidOperand); },
+        0b0101 => { return Err(StandardDecodeError::InvalidOperand); },
         0b0110 => (0, Deref_A0),
         0b0111 => (0, Deref_A1),
         0b1000 => (1, Disp8_A0),
@@ -2130,18 +2101,18 @@ fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruct
     match imm_size {
         0 => {}
         1 => {
-            inst.dispabs = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16;
+            inst.dispabs = words.next()? as u16;
             inst.length += 1;
         }
         2 => {
-            inst.dispabs = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16;
-            inst.dispabs |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u16) << 8;
+            inst.dispabs = words.next()? as u16;
+            inst.dispabs |= (words.next()? as u16) << 8;
             inst.length += 2;
         }
         3 => {
-            inst.imm_wide = bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32;
-            inst.imm_wide |= (bytes.next().ok_or(DecodeError::ExhaustedInput)? as u32) << 8;
-            inst.imm_wide |= ((bytes.next().ok_or(DecodeError::ExhaustedInput)? & 0x0f) as u32) << 16;
+            inst.imm_wide = words.next()? as u32;
+            inst.imm_wide |= (words.next()? as u32) << 8;
+            inst.imm_wide |= ((words.next()? & 0x0f) as u32) << 16;
             inst.length += 3;
         }
         _ => {
@@ -2152,7 +2123,7 @@ fn Operand_RegDerefDisp20Abs<T: Iterator<Item=u8>>(code: u8, inst: &mut Instruct
     Ok(spec)
 }
 
-fn Operand_IntFlgSpSbFb(code: u8) -> Result<OperandSpec, DecodeError> {
+fn Operand_IntFlgSpSbFb(code: u8) -> Result<OperandSpec, <M16C as Arch>::DecodeError> {
     use OperandSpec::*;
 
     match code {
@@ -2163,6 +2134,6 @@ fn Operand_IntFlgSpSbFb(code: u8) -> Result<OperandSpec, DecodeError> {
         0b101 => Ok(SP),
         0b110 => Ok(SB),
         0b111 => Ok(FB),
-        _ => Err(DecodeError::InvalidOperand)
+        _ => Err(StandardDecodeError::InvalidOperand)
     }
 }
